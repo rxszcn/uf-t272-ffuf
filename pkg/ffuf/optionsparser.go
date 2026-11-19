@@ -392,6 +392,25 @@ func ConfigFromOptions(parseOpts *ConfigOptions, ctx context.Context, cancel con
 		}
 	}
 
+	// Validate the assembled input providers before anything consumes them. The
+	// input value model (pkg/input) keys each iteration's values by keyword, so
+	// two providers sharing a keyword silently collapse into one: the earlier
+	// provider's payloads never reach a request, while Total() still counts the
+	// full cartesian product. An empty keyword (e.g. a trailing colon in
+	// "/path/wordlist:") collapses the same way and is likewise rejected.
+	seenKeywords := make(map[string]string)
+	for _, p := range conf.InputProviders {
+		if p.Keyword == "" {
+			errs.Add(fmt.Errorf("Input provider %q has an empty keyword. Remove the trailing colon to use the default FUZZ keyword, or specify a non-empty keyword", p.Value))
+			continue
+		}
+		if first, ok := seenKeywords[p.Keyword]; ok {
+			errs.Add(fmt.Errorf("Keyword %q is used by multiple input providers (%q and %q). Each wordlist / input command needs a unique keyword, eg. -w '/path/to/wordlist:KEYWORD'", p.Keyword, first, p.Value))
+		} else {
+			seenKeywords[p.Keyword] = p.Value
+		}
+	}
+
 	if len(conf.InputProviders) == 0 {
 		errs.Add(fmt.Errorf("Either -w or --input-cmd flag is required"))
 	}

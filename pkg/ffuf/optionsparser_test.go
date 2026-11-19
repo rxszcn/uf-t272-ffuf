@@ -1,6 +1,9 @@
 package ffuf
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -176,5 +179,94 @@ func TestReplayProxyParsing(t *testing.T) {
 	_, err = ConfigFromOptions(configOptions, nil, nil)
 	if !strings.Contains(err.Error(), errorString) {
 		t.Errorf("Expected proxy string with unsupported protocol to fail")
+	}
+}
+
+func writeParserTestWordlist(t *testing.T, name string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte("one\ntwo\nthree\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// Two wordlists without explicit keywords both default to FUZZ. The input
+// value model keys values by keyword, so this used to silently collapse: the
+// first wordlist's payloads were never sent while the reported combination
+// count still covered both lists. The configuration must now be rejected.
+func TestConfigFromOptionsRejectsDuplicateDefaultKeyword(t *testing.T) {
+	w1 := writeParserTestWordlist(t, "w1.txt")
+	w2 := writeParserTestWordlist(t, "w2.txt")
+
+	opts := NewConfigOptions()
+	opts.HTTP.URL = "https://example.org/FUZZ"
+	opts.Input.Wordlists = []string{w1, w2}
+
+	_, err := ConfigFromOptions(opts, context.Background(), func() {})
+	if err == nil || !strings.Contains(err.Error(), "multiple input providers") {
+		t.Fatalf("expected duplicate keyword error, got: %v", err)
+	}
+}
+
+// A wordlist and an input command sharing the (default) keyword collapse the
+// same way and must be rejected as well.
+func TestConfigFromOptionsRejectsDuplicateKeywordAcrossWordlistAndCommand(t *testing.T) {
+	w1 := writeParserTestWordlist(t, "w1.txt")
+
+	opts := NewConfigOptions()
+	opts.HTTP.URL = "https://example.org/FUZZ"
+	opts.Input.Wordlists = []string{w1}
+	opts.Input.Inputcommands = []string{"printf fuzz"}
+
+	_, err := ConfigFromOptions(opts, context.Background(), func() {})
+	if err == nil || !strings.Contains(err.Error(), "multiple input providers") {
+		t.Fatalf("expected duplicate keyword error, got: %v", err)
+	}
+}
+
+// A trailing colon ("wordlist.txt:") yields an empty keyword, which used to be
+// silently assembled. It must be rejected for wordlists and input commands.
+func TestConfigFromOptionsRejectsEmptyKeyword(t *testing.T) {
+	w1 := writeParserTestWordlist(t, "w1.txt")
+
+	opts := NewConfigOptions()
+	opts.HTTP.URL = "https://example.org/FUZZ"
+	opts.Input.Wordlists = []string{w1 + ":"}
+
+	_, err := ConfigFromOptions(opts, context.Background(), func() {})
+	if err == nil || !strings.Contains(err.Error(), "empty keyword") {
+		t.Fatalf("expected empty keyword error for wordlist, got: %v", err)
+	}
+
+	opts = NewConfigOptions()
+	opts.HTTP.URL = "https://example.org/FUZZ"
+	opts.Input.Inputcommands = []string{"printf fuzz:"}
+
+	_, err = ConfigFromOptions(opts, context.Background(), func() {})
+	if err == nil || !strings.Contains(err.Error(), "empty keyword") {
+		t.Fatalf("expected empty keyword error for input command, got: %v", err)
+	}
+}
+
+// Control group: explicitly distinct keywords keep assembling both providers.
+func TestConfigFromOptionsDistinctKeywordsControl(t *testing.T) {
+	w1 := writeParserTestWordlist(t, "w1.txt")
+	w2 := writeParserTestWordlist(t, "w2.txt")
+
+	opts := NewConfigOptions()
+	opts.HTTP.URL = "https://example.org/W1/W2"
+	opts.Input.Wordlists = []string{w1 + ":W1", w2 + ":W2"}
+
+	conf, err := ConfigFromOptions(opts, context.Background(), func() {})
+	if err != nil {
+		t.Fatalf("distinct keywords must keep working, got: %v", err)
+	}
+	if len(conf.InputProviders) != 2 {
+		t.Fatalf("got %d input providers, want 2", len(conf.InputProviders))
+	}
+	if conf.InputProviders[0].Keyword != "W1" || conf.InputProviders[1].Keyword != "W2" {
+		t.Fatalf("keywords = %q, %q; want W1, W2",
+			conf.InputProviders[0].Keyword, conf.InputProviders[1].Keyword)
 	}
 }

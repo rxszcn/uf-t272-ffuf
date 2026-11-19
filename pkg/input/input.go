@@ -40,6 +40,19 @@ func NewInputProvider(conf *ffuf.Config) (ffuf.InputProvider, ffuf.Multierror) {
 }
 
 func (i *MainInputProvider) AddProvider(provider ffuf.InputProviderConfig) error {
+	// The value model keys each iteration's inputs by keyword (see Value), so a
+	// duplicate or empty keyword would silently collapse providers: the earlier
+	// provider's payloads would never be sent while Total() still counts them.
+	// Reject such configurations here as well, so programmatic assembly and
+	// history replay (which bypass options parsing) fail loudly too.
+	if provider.Keyword == "" {
+		return fmt.Errorf("input provider %q has an empty keyword", provider.Value)
+	}
+	for _, p := range i.Providers {
+		if p.Keyword() == provider.Keyword {
+			return fmt.Errorf("keyword %q is used by multiple input providers; each provider needs a unique keyword", provider.Keyword)
+		}
+	}
 	if provider.Name == "command" {
 		newcomm, _ := NewCommandInput(provider.Keyword, provider.Value, i.Config)
 		i.Providers = append(i.Providers, newcomm)
